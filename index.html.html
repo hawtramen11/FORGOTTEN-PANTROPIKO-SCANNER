@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Forgotten Island Scanner</title>
+
+<script src="https://unpkg.com/@zxing/library@0.21.3"></script>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 20px;
+  font-family: Arial, sans-serif;
+  text-align: center;
+  background: #f4f4f4;
+  color: #222;
+}
+
+h1 { margin: 10px 0 4px; }
+h2 { margin: 0 0 18px; font-size: 17px; font-weight: normal; }
+
+button {
+  border: 0;
+  border-radius: 12px;
+  padding: 14px 18px;
+  margin: 5px;
+  font-size: 16px;
+  font-weight: bold;
+  cursor: pointer;
+}
+
+.mode {
+  background: white;
+  border: 2px solid #ccc;
+}
+
+.mode.active {
+  background: #222;
+  color: white;
+}
+
+#start {
+  background: #111;
+  color: white;
+  font-size: 19px;
+  padding: 17px 28px;
+  margin: 18px 0;
+}
+
+#scanner {
+  width: 100%;
+  max-width: 520px;
+  margin: 15px auto;
+  background: #000;
+  border-radius: 18px;
+  overflow: hidden;
+  display: none;
+}
+
+#video {
+  width: 100%;
+  display: block;
+}
+
+#status {
+  margin: 14px;
+  line-height: 1.5;
+}
+
+#ticket {
+  width: 90%;
+  max-width: 350px;
+  padding: 13px;
+  font-size: 20px;
+  text-align: center;
+  border-radius: 10px;
+  border: 1px solid #ccc;
+}
+
+#check {
+  background: white;
+  border: 1px solid #ccc;
+}
+
+#result {
+  margin: 25px auto 0;
+  min-height: 90px;
+  max-width: 520px;
+  font-size: 23px;
+  font-weight: bold;
+}
+
+.success { color: #16833b; }
+.warning { color: #b26a00; }
+.error { color: #c62828; }
+
+.small {
+  color: #666;
+  font-size: 13px;
+  margin-top: 18px;
+}
+</style>
+</head>
+
+<body>
+
+<h1>🏝️ FORGOTTEN ISLAND</h1>
+<h2>Island Access Control</h2>
+
+<div>
+  <button id="admission" class="mode active" onclick="setMode('ADMISSION')">
+    🎬 ADMISSION
+  </button>
+
+  <button id="lafang" class="mode" onclick="setMode('LAFANG')">
+    🍿🥤 LAFANG
+  </button>
+</div>
+
+<p id="modeText">Current mode: <b>🎬 ADMISSION</b></p>
+
+<button id="start" onclick="startScanner()">
+  📷 START SCANNER
+</button>
+
+<div id="status">Camera is off.</div>
+
+<div id="scanner">
+  <video id="video" autoplay muted playsinline></video>
+</div>
+
+<p>Point the camera at the Code 128 barcode.</p>
+
+<input id="ticket" type="text" placeholder="Ticket ID">
+
+<br>
+
+<button id="check" onclick="manualCheck()">CHECK PASS</button>
+
+<div id="result"></div>
+
+<div class="small">
+  Backend connected to your Forgotten Island Google Sheet.
+</div>
+
+<script>
+const API_URL = 'https://script.google.com/macros/s/AKfycbxOVXHASEcxl7cEX0_6HibrHmf41OmxN0JkdjCA7U8hey_vxyQDSUZsKzBCOor3ZgWYAQ/exec';
+
+let currentMode = "ADMISSION";
+let reader = null;
+let processing = false;
+let lastTicket = "";
+let scannerStarted = false;
+
+function setMode(mode) {
+  currentMode = mode;
+
+  document.getElementById("ticket").value = "";
+  document.getElementById("result").innerHTML = "";
+
+  document.getElementById("admission")
+    .classList.toggle("active", mode === "ADMISSION");
+
+  document.getElementById("lafang")
+    .classList.toggle("active", mode === "LAFANG");
+
+  document.getElementById("modeText").innerHTML =
+    mode === "ADMISSION"
+      ? "Current mode: <b>🎬 ADMISSION</b>"
+      : "Current mode: <b>🍿🥤 LAFANG</b>";
+}
+
+async function startScanner() {
+  if (scannerStarted) return;
+
+  if (!window.isSecureContext) {
+    showError("Camera access needs an HTTPS webpage. Open this file from its hosted HTTPS link, not directly from your computer.");
+    return;
+  }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    showError("This browser does not support camera access.");
+    return;
+  }
+
+  if (typeof ZXing === "undefined") {
+    showError("The barcode scanner library did not load. Check your internet connection and reload the page.");
+    return;
+  }
+
+  try {
+    document.getElementById("status").innerHTML =
+      "📷 Requesting camera permission...";
+
+    reader = new ZXing.BrowserMultiFormatReader();
+
+    await reader.decodeFromConstraints(
+      {
+        video: {
+          facingMode: { ideal: "environment" }
+        },
+        audio: false
+      },
+      document.getElementById("video"),
+      function(result, error) {
+        if (!result || processing) return;
+
+        const ticket = result.getText().trim();
+
+        if (!ticket || ticket === lastTicket) return;
+
+        lastTicket = ticket;
+        processing = true;
+
+        document.getElementById("ticket").value = ticket;
+
+        document.getElementById("result").innerHTML =
+          "⏳ Checking <b>" + escapeHtml(ticket) + "</b>...";
+
+        sendTicket(ticket);
+      }
+    );
+
+    scannerStarted = true;
+    document.getElementById("scanner").style.display = "block";
+    document.getElementById("start").style.display = "none";
+    document.getElementById("status").innerHTML =
+      "🟢 Camera ready. Scan the barcode!";
+  } catch (error) {
+    console.error("CAMERA ERROR:", error);
+
+    document.getElementById("status").innerHTML =
+      "❌ CAMERA ERROR<br><br>" +
+      "<b>" + escapeHtml(error.name || "UnknownError") + "</b><br>" +
+      escapeHtml(error.message || "No error message was provided.") +
+      "<br><br>Check this website's camera permission in your browser.";
+  }
+}
+
+function sendTicket(ticket) {
+  const callbackName = "forgottenIslandCallback_" + Date.now();
+
+  window[callbackName] = function(response) {
+    handleResponse(response);
+    delete window[callbackName];
+    if (script.parentNode) script.parentNode.removeChild(script);
+  };
+
+  const separator = API_URL.includes("?") ? "&" : "?";
+
+  const url =
+    API_URL + separator +
+    "ticket=" + encodeURIComponent(ticket) +
+    "&mode=" + encodeURIComponent(currentMode) +
+    "&callback=" + encodeURIComponent(callbackName);
+
+  const script = document.createElement("script");
+  script.src = url;
+
+  script.onerror = function() {
+    showError("The scanner could not contact the Google Apps Script backend. Make sure the Apps Script deployment is the latest version and is set to Anyone.");
+    processing = false;
+    lastTicket = "";
+    delete window[callbackName];
+    script.remove();
+  };
+
+  document.body.appendChild(script);
+}
+
+function handleResponse(response) {
+  if (!response) {
+    showError("No response came back from Google Apps Script.");
+    processing = false;
+    lastTicket = "";
+    return;
+  }
+
+  let html = "";
+
+  if (response.success && response.type === "admission") {
+    html =
+      "<div class='success'>" +
+      "✅ ACCESS GRANTED<br><br>" +
+      "Welcome, " + escapeHtml(response.name) + "! 🎬" +
+      "</div>";
+  } else if (response.success && response.type === "lafang") {
+    html =
+      "<div class='success'>" +
+      "🍿🥤 LAFANG CLAIMED!<br><br>" +
+      escapeHtml(response.name) +
+      "</div>";
+  } else if (response.type === "already_admitted") {
+    html =
+      "<div class='warning'>" +
+      "⚠️ ALREADY ADMITTED<br><br>" +
+      escapeHtml(response.name) +
+      "</div>";
+  } else if (response.type === "already_lafang") {
+    html =
+      "<div class='warning'>" +
+      "⚠️ LAFANG ALREADY CLAIMED<br><br>" +
+      escapeHtml(response.name) +
+      "</div>";
+  } else {
+    html =
+      "<div class='error'>❌ " +
+      escapeHtml(response.message || "Unknown error") +
+      (response.ticket
+        ? "<br><br>" + escapeHtml(response.ticket)
+        : "") +
+      "</div>";
+  }
+
+  document.getElementById("result").innerHTML = html;
+  document.getElementById("ticket").value = "";
+
+  processing = false;
+
+  setTimeout(function() {
+    lastTicket = "";
+  }, 3000);
+}
+
+function manualCheck() {
+  const ticket = document.getElementById("ticket").value.trim();
+
+  if (!ticket) {
+    alert("Enter a ticket ID.");
+    return;
+  }
+
+  if (processing) return;
+
+  lastTicket = ticket;
+  processing = true;
+  sendTicket(ticket);
+}
+
+function showError(message) {
+  document.getElementById("result").innerHTML =
+    "<div class='error'>❌ " + escapeHtml(message) + "</div>";
+}
+
+function escapeHtml(value) {
+  const div = document.createElement("div");
+  div.textContent = String(value);
+  return div.innerHTML;
+}
+</script>
+
+</body>
+</html>
